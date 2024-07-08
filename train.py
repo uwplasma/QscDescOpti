@@ -13,7 +13,7 @@ from model import Generator, Discriminator
 Only the first 116 rows are read from the original dataset 
 to maintain consistency because the dataset contains only 116 good stellarators.'''
 
-original_data = pd.read_csv('dataset.csv', nrows=568)
+original_data = pd.read_csv('train_data.csv')
 target_data = pd.read_csv('good_data.csv')
 
 
