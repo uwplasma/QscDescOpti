@@ -16,7 +16,7 @@ device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 G_X2Y.to(device)
 
 # Load the trained model parameters
-G_X2Y.load_state_dict(torch.load('G_X2Y_epoch_3000.pth'))
+G_X2Y.load_state_dict(torch.load('G_A2B_checkpoint_55ac.pth'))
 
 G_X2Y.eval()
 

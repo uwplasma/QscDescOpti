@@ -6,16 +6,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 from model import Generator, Discriminator
 
 # read data
-'''Reading the original and target data from CSV files. 
-Only the first 116 rows are read from the original dataset 
-to maintain consistency because the dataset contains only 116 good stellarators.'''
 
 original_data = pd.read_csv('train_data.csv')
 target_data = pd.read_csv('good_data.csv')
-
 
 # get the values of the data
 X = original_data.values
@@ -27,199 +24,316 @@ scaler_Y = StandardScaler()
 X = scaler_X.fit_transform(X)
 Y = scaler_Y.fit_transform(Y)
 
-# split the data into training set, validation set and test set
-# Splitting the data into training (70%), validation (15%), and test (15%) sets.
-X_train, X_temp, Y_train, Y_temp = train_test_split(X, Y, test_size=0.3, random_state=42)
-X_val, X_test, Y_val, Y_test = train_test_split(X_temp, Y_temp, test_size=0.5, random_state=42)
+X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=0.15, random_state=42)
 
 # convert the data to tensor
 X_train = torch.tensor(X_train, dtype=torch.float32)
 Y_train = torch.tensor(Y_train, dtype=torch.float32)
 X_val = torch.tensor(X_val, dtype=torch.float32)
 Y_val = torch.tensor(Y_val, dtype=torch.float32)
-X_test = torch.tensor(X_test, dtype=torch.float32)
-Y_test = torch.tensor(Y_test, dtype=torch.float32)
+
 
 # create data loader
 batch_size = 64
 train_dataset = TensorDataset(X_train, Y_train)
 val_dataset = TensorDataset(X_val, Y_val)
-test_dataset = TensorDataset(X_test, Y_test)
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
-# Define the generator and discriminator models
 input_dim = 20
 output_dim = 20
+batch_size = 32
+n_epochs = 2000
+patience = 50
 
-# Transform samples from domain X to samples from domain Y.
-G_X2Y = Generator(input_dim, output_dim)
+"""
+L2 or MSE provides a smooth gradient, reducing the chances of the gradients exploding or vanishing, 
+ensuring a smooth training process. 
+L1 or MAE is less sensitive to outliers, allowing the reconstructed data to retain distinct features. 
+Since the original bad configurations are each different, using L1 helps preserve these distinct features.
+"""
+adversarial_loss = nn.MSELoss()  # GAN loss
+cycle_loss = nn.L1Loss()  # Cycle-consistency loss
 
-# Transform samples from domain Y to samples from domain X.
-G_Y2X = Generator(input_dim, output_dim)
+G_A2B = Generator(input_dim, output_dim)
 
-# Discriminate between samples from domain X and generated samples from domain Y.
-D_X = Discriminator(input_dim)
+G_B2A = Generator(output_dim, input_dim)
 
-# Discriminate between samples from domain Y and generated samples from domain X.
-D_Y = Discriminator(input_dim)
+D_A = Discriminator(input_dim)
 
-# Apple uses the MPS backend for training on the M1 chip
-# Linux and Windows users can remove the following line
+D_B = Discriminator(output_dim)
+
 device = torch.device('mps')
 
-G_X2Y.to(device)
-G_Y2X.to(device)
-D_X.to(device)
-D_Y.to(device)
+G_A2B.to(device)
+G_B2A.to(device)
+D_A.to(device)
+D_B.to(device)
 
 # Define the loss function and optimizers
-criterion = nn.MSELoss()
-optimizer_G_X2Y = optim.RMSprop(G_X2Y.parameters(), lr=0.0002)
-optimizer_G_Y2X = optim.RMSprop(G_Y2X.parameters(), lr=0.0002)
-optimizer_D_X = optim.RMSprop(D_X.parameters(), lr=0.0002)
-optimizer_D_Y = optim.RMSprop(D_Y.parameters(), lr=0.0002)
+# By putting the parameters of both generators together in a single optimizer, their updates are synchronized.
+optimizer_G = optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()), lr=0.0002, betas=(0.5, 0.999))
+optimizer_D_A = optim.Adam(D_A.parameters(), lr=0.0002, betas=(0.5, 0.999))
+optimizer_D_B = optim.Adam(D_B.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
-# use learning rate scheduler, which reduces the learning rate by a factor of 0.5 every 200 epochs
-scheduler_G_X2Y = optim.lr_scheduler.StepLR(optimizer_G_X2Y, step_size=100, gamma=0.5)
-scheduler_G_Y2X = optim.lr_scheduler.StepLR(optimizer_G_Y2X, step_size=100, gamma=0.5)
-scheduler_D_X = optim.lr_scheduler.StepLR(optimizer_D_X, step_size=100, gamma=0.5)
-scheduler_D_Y = optim.lr_scheduler.StepLR(optimizer_D_Y, step_size=100, gamma=0.5)
+train_loss_records = {
+    'loss_GAN_A2B': [],
+    'loss_GAN_B2A': [],
+    'loss_cycle_A': [],
+    'loss_cycle_B': [],
+    'loss_id_A': [],
+    'loss_id_B': [],
+    'loss_D_A': [],
+    'loss_D_B': [],
+     'loss_G': []
+}
 
-num_epochs = 3000
-save_interval = 1000
+val_loss_records = {
+    'loss_GAN_A2B': [],
+    'loss_GAN_B2A': [],
+    'loss_cycle_A': [],
+    'loss_cycle_B': [],
+    'loss_id_A': [],
+    'loss_id_B': [],
+    'loss_D_A': [],
+    'loss_D_B': [],
+    'loss_G': []
+}
 
-for epoch in range(num_epochs):
-    G_X2Y.train()
-    G_Y2X.train()
-    D_X.train()
-    D_Y.train()
+# To save the best model
+best_loss_G = float('inf')
+best_model_path = ''
+early_stop_counter = 0
+
+for epoch in range(n_epochs):
+    G_A2B.train()
+    G_B2A.train()
+    D_A.train()
+    D_B.train()
+
+    train_loss_GAN_A2B = 0
+    train_loss_GAN_B2A = 0
+    train_loss_cycle_A = 0
+    train_loss_cycle_B = 0
+    train_loss_id_A = 0
+    train_loss_id_B = 0
+    train_loss_D_A = 0
+    train_loss_D_B = 0
+    train_loss_G = 0
+    num_batches = 0
+
+    for real_A, real_B in train_loader:
+        real_A, real_B = real_A.to(device), real_B.to(device)
+        current_batch_size = real_A.size(0)
+        
+        # make the labels
+        valid = torch.ones((real_A.size(0), 1), requires_grad=False).to(device)
+        fake = torch.zeros((real_A.size(0), 1), requires_grad=False).to(device)
+        
+        # Train the generators
+        optimizer_G.zero_grad()
+
+        # Identity loss
+        '''
+        The identity loss ensures that when an image of domain A (or B) 
+        is fed to the generator for the same domain (G_B2A for A or G_A2B for B), 
+        the output should be the same as the input.
+        '''
+        loss_id_A = cycle_loss(G_B2A(real_A), real_A)
+        loss_id_B = cycle_loss(G_A2B(real_B), real_B)
+
+        # GAN loss
+        '''
+        The GAN loss is used to make the generated configurations (fake_B and fake_A) indistinguishable 
+        from good configurations by the discriminators (D_B and D_A).
+        '''
+        fake_B = G_A2B(real_A)
+        loss_GAN_A2B = adversarial_loss(D_B(fake_B), valid[:fake_B.size(0)])
+        fake_A = G_B2A(real_B)
+        loss_GAN_B2A = adversarial_loss(D_A(fake_A), valid[:fake_A.size(0)])
+
+        # Cycle loss
+        '''
+        The cycle loss enforces that if translating a configuration to the other domain 
+        and then back to the original domain, we should get back the original configuration
+        (i.e., real_A -> fake_B -> recov_A should be similar to real_A).
+        '''
+        recov_A = G_B2A(fake_B)
+        loss_cycle_A = cycle_loss(recov_A, real_A)
+        recov_B = G_A2B(fake_A)
+        loss_cycle_B = cycle_loss(recov_B, real_B)
+
+        # Total loss
+        '''
+        Balances the three types of losses to ensure that the generators 
+        not only produce realistic images 
+        but also maintain the identity and cycle consistency of the images.
+
+        '''
+        loss_G = (2*loss_GAN_A2B + loss_GAN_B2A) + (loss_cycle_A + loss_cycle_B) + (loss_id_A + loss_id_B)
+        # loss_G = (loss_GAN_A2B + loss_GAN_B2A) + 5*(loss_cycle_A + loss_cycle_B) + 5*(loss_id_A + loss_id_B)
+
+
+        loss_G.backward()
+        optimizer_G.step()
+
+        train_loss_GAN_A2B += loss_GAN_A2B.item()
+        train_loss_GAN_B2A += loss_GAN_B2A.item()
+        train_loss_cycle_A += loss_cycle_A.item()
+        train_loss_cycle_B += loss_cycle_B.item()
+        train_loss_id_A += loss_id_A.item()
+        train_loss_id_B += loss_id_B.item()
+        train_loss_G += loss_G.item()
+        num_batches += 1
+        
+        # Train the discriminators
+        optimizer_D_A.zero_grad()
+        # Real loss
+        '''
+        The real loss measures how well the discriminator can identify real images as real.
+        '''
+        loss_real = adversarial_loss(D_A(real_A), valid[:real_A.size(0)])
+        # Fake loss
+        '''
+        The fake loss measures how well the discriminator can identify fake images as fake.
+        '''
+        loss_fake = adversarial_loss(D_A(fake_A.detach()), fake[:fake_A.size(0)])
+        # Total loss
+        loss_D_A = (loss_real + loss_fake) / 2
+
+        loss_D_A.backward()
+        optimizer_D_A.step()
+        train_loss_D_A += loss_D_A.item()
+
+        optimizer_D_B.zero_grad()
+
+        # Real loss
+        loss_real = adversarial_loss(D_B(real_B), valid[:real_B.size(0)])
+        # Fake loss
+        loss_fake = adversarial_loss(D_B(fake_B.detach()), fake[:fake_B.size(0)])
+        # Total loss
+        loss_D_B = (loss_real + loss_fake) / 2
+
+        loss_D_B.backward()
+        optimizer_D_B.step()
+
+        train_loss_D_B += loss_D_B.item()
     
-    for batch_x, batch_y in train_loader:
-        batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-        current_batch_size = batch_x.size(0)
+    train_loss_records['loss_GAN_A2B'].append(train_loss_GAN_A2B / num_batches)
+    train_loss_records['loss_GAN_B2A'].append(train_loss_GAN_B2A / num_batches)
+    train_loss_records['loss_cycle_A'].append(train_loss_cycle_A / num_batches)
+    train_loss_records['loss_cycle_B'].append(train_loss_cycle_B / num_batches)
+    train_loss_records['loss_id_A'].append(train_loss_id_A / num_batches)
+    train_loss_records['loss_id_B'].append(train_loss_id_B / num_batches)
+    train_loss_records['loss_D_A'].append(train_loss_D_A / num_batches)
+    train_loss_records['loss_D_B'].append(train_loss_D_B / num_batches)
+    train_loss_records['loss_G'].append(train_loss_G / num_batches)
 
-        # train the discriminator (every other step),since discriminator learns faster than the generator
-        if epoch % 5 == 0:
-            optimizer_D_X.zero_grad()
+    # if (epoch+1) % 1000 == 0 or loss_GAN_A2B.cpu().item() < best_loss_GAN_A2B:
+    #     if (epoch+1) % 1000 == 0:
+    # #         torch.save(G_A2B.state_dict(), f'G_A2B_checkpoint_{epoch+1}.pth')
+    # #     if loss_GAN_A2B.cpu().item() < best_loss_GAN_A2B:
+    # #         best_loss_GAN_A2B = loss_GAN_A2B.cpu().item()
+    # #         best_model_path = f'G_A2B_best_model.pth'
+    # #         torch.save(G_A2B.state_dict(), best_model_path)
 
-            '''
-            These two lines create smoothed labels for the real (0.9-1.0) and fake (0.0-0.1) data 
-            to improve GAN training stability by preventing the discriminator from becoming overconfident.
-            '''
-            real_labels_smooth = torch.FloatTensor(current_batch_size, 1).uniform_(0.9, 1.0).to(device)
-            fake_labels_smooth = torch.FloatTensor(current_batch_size, 1).uniform_(0.0, 0.1).to(device)
-
-            d_x_real = D_X(batch_x)
-            d_loss_real_x = criterion(d_x_real, real_labels_smooth)
-            
-            y_fake = G_X2Y(batch_x)
-            d_x_fake = D_X(y_fake.detach())
-            d_loss_fake_x = criterion(d_x_fake, fake_labels_smooth)
-            
-            d_loss_x = (d_loss_real_x + d_loss_fake_x) / 2
-            d_loss_x.backward()
-            optimizer_D_X.step()
-
-            optimizer_D_Y.zero_grad()
-            
-            d_y_real = D_Y(batch_y)
-            d_loss_real_y = criterion(d_y_real, real_labels_smooth)
-            
-            x_fake = G_Y2X(batch_y)
-            d_y_fake = D_Y(x_fake.detach())
-            d_loss_fake_y = criterion(d_y_fake, fake_labels_smooth)
-            
-            d_loss_y = (d_loss_real_y + d_loss_fake_y) / 2
-            d_loss_y.backward()
-            optimizer_D_Y.step()
-           
-           # train the generator
-        '''
-        Generate fake samples 'y_fake' from 'batch_x' using the generator G_X2Y 
-        Calculate cycle consistency loss: torch.mean(torch.abs(batch_x - G_Y2X(y_fake))).
-        to ensure that the generator can reconstruct the original input.
-        '''
-        optimizer_G_X2Y.zero_grad()
-        y_fake = G_X2Y(batch_x)
-        d_y_fake = D_Y(y_fake)
-        real_labels_smooth = torch.ones(current_batch_size, 1).to(device) 
-        g_loss_x2y = criterion(d_y_fake, real_labels_smooth) + torch.mean(torch.abs(batch_x - G_Y2X(y_fake)))
-        g_loss_x2y.backward()
-        optimizer_G_X2Y.step()
-
-        '''
-        Generate fake samples 'x_fake' from 'batch_y' using the generator G_Y2X
-        Calculate cycle consistency loss: torch.mean(torch.abs(batch_y - G_X2Y(x_fake)))
-        to ensure that the generator can reconstruct the original input.
-        '''
-        optimizer_G_Y2X.zero_grad()
-        x_fake = G_Y2X(batch_y)
-        d_x_fake = D_X(x_fake)
-        g_loss_y2x = criterion(d_x_fake, real_labels_smooth) + torch.mean(torch.abs(batch_y - G_X2Y(x_fake)))
-        g_loss_y2x.backward()
-        optimizer_G_Y2X.step()
-    
-    # update the learning rate
-    scheduler_G_X2Y.step()
-    scheduler_G_Y2X.step()
-    scheduler_D_X.step()
-    scheduler_D_Y.step()
-    
-    # evaluate the model
-    G_X2Y.eval()
-    G_Y2X.eval()
-    D_X.eval()
-    D_Y.eval()
+    G_A2B.eval()
+    G_B2A.eval()
+    D_A.eval()
+    D_B.eval()
 
     with torch.no_grad():
-        val_d_loss_x = 0
-        val_d_loss_y = 0
-        val_g_loss_x2y = 0
-        val_g_loss_y2x = 0
-        for batch_x, batch_y in val_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            current_batch_size = batch_x.size(0)
+        val_loss_GAN_A2B, val_loss_GAN_B2A, val_loss_cycle_A, val_loss_cycle_B, val_loss_id_A, val_loss_id_B, val_loss_D_A, val_loss_D_B, val_loss_G = 0, 0, 0, 0, 0, 0, 0, 0,0
+        val_batches = 0
 
-            real_labels_smooth = torch.FloatTensor(current_batch_size, 1).uniform_(0.9, 1.0).to(device)
-            fake_labels_smooth = torch.FloatTensor(current_batch_size, 1).uniform_(0.0, 0.1).to(device)
+        for real_A, real_B in val_loader:
+            real_A, real_B = real_A.to(device), real_B.to(device)
+            valid = torch.ones((real_A.size(0), 1), requires_grad=False).to(device)
 
-            d_x_real = D_X(batch_x)
-            d_loss_real_x = criterion(d_x_real, real_labels_smooth)
-            
-            y_fake = G_X2Y(batch_x)
-            d_x_fake = D_X(y_fake)
-            d_loss_fake_x = criterion(d_x_fake, fake_labels_smooth)
-            val_d_loss_x += (d_loss_real_x + d_loss_fake_x) / 2
-            
-            d_y_real = D_Y(batch_y)
-            d_loss_real_y = criterion(d_y_real, real_labels_smooth)
-            
-            x_fake = G_Y2X(batch_y)
-            d_y_fake = D_Y(x_fake)
-            d_loss_fake_y = criterion(d_y_fake, fake_labels_smooth)
-            val_d_loss_y += (d_loss_real_y + d_loss_fake_y) / 2
+            fake_B = G_A2B(real_A)
+            fake_A = G_B2A(real_B)
+            val_loss_GAN_A2B += adversarial_loss(D_B(fake_B), valid[:fake_B.size(0)]).cpu().item()
+            val_loss_GAN_B2A += adversarial_loss(D_A(fake_A), valid[:fake_A.size(0)]).cpu().item()
+            recov_A = G_B2A(fake_B)
+            val_loss_cycle_A += cycle_loss(recov_A, real_A).cpu().item()
+            recov_B = G_A2B(fake_A)
+            val_loss_cycle_B += cycle_loss(recov_B, real_B).cpu().item()
+            val_loss_id_A += cycle_loss(G_B2A(real_A), real_A).cpu().item()
+            val_loss_id_B += cycle_loss(G_A2B(real_B), real_B).cpu().item()
 
-            real_labels_smooth = torch.ones(current_batch_size, 1).to(device)
-            d_y_fake = D_Y(y_fake)
-            val_g_loss_x2y += criterion(d_y_fake, real_labels_smooth) + torch.mean(torch.abs(batch_x - G_Y2X(y_fake)))
-            
-            d_x_fake = D_X(x_fake)
-            val_g_loss_y2x += criterion(d_x_fake, real_labels_smooth) + torch.mean(torch.abs(batch_y - G_X2Y(x_fake)))
+            val_loss_real_A = adversarial_loss(D_A(real_A), valid[:real_A.size(0)]).cpu().item()
+            val_loss_fake_A = adversarial_loss(D_A(fake_A.detach()), fake[:fake_A.size(0)]).cpu().item()
+            val_loss_D_A += (val_loss_real_A + val_loss_fake_A) / 2
+
+            val_loss_real_B = adversarial_loss(D_B(real_B), valid[:real_B.size(0)]).cpu().item()
+            val_loss_fake_B = adversarial_loss(D_B(fake_B.detach()), fake[:fake_B.size(0)]).cpu().item()
+            val_loss_D_B += (val_loss_real_B + val_loss_fake_B) / 2
+
+            val_loss_G += (2 * val_loss_GAN_A2B + val_loss_GAN_B2A) + (val_loss_cycle_A + val_loss_cycle_B) + (val_loss_id_A + val_loss_id_B)
+
+
+            val_batches += 1
+
         
-        val_d_loss_x /= len(val_loader)
-        val_d_loss_y /= len(val_loader)
-        val_g_loss_x2y /= len(val_loader)
-        val_g_loss_y2x /= len(val_loader)
-    
-    if (epoch + 1) % 100 == 0:
-        print(f'Epoch [{epoch+1}/{num_epochs}], d_loss_x: {d_loss_x.item():.4f}, d_loss_y: {d_loss_y.item():.4f}, g_loss_x2y: {g_loss_x2y.item():.4f}, g_loss_y2x: {g_loss_y2x.item():.4f}')
-        print(f'Validation: d_loss_x: {val_d_loss_x:.4f}, d_loss_y: {val_d_loss_y:.4f}, g_loss_x2y: {val_g_loss_x2y:.4f}, g_loss_y2x: {val_g_loss_y2x:.4f}')
-    
-    if (epoch + 1) % save_interval == 0:
-        torch.save(G_X2Y.state_dict(), f'G_X2Y_epoch_{epoch+1}.pth')
-        torch.save(G_Y2X.state_dict(), f'G_Y2X_epoch_{epoch+1}.pth')
-        torch.save(D_X.state_dict(), f'D_X_epoch_{epoch+1}.pth')
-        torch.save(D_Y.state_dict(), f'D_Y_epoch_{epoch+1}.pth')
+        val_loss_records['loss_GAN_A2B'].append(val_loss_GAN_A2B / val_batches)
+        val_loss_records['loss_GAN_B2A'].append(val_loss_GAN_B2A / val_batches)
+        val_loss_records['loss_cycle_A'].append(val_loss_cycle_A / val_batches)
+        val_loss_records['loss_cycle_B'].append(val_loss_cycle_B / val_batches)
+        val_loss_records['loss_id_A'].append(val_loss_id_A / val_batches)
+        val_loss_records['loss_id_B'].append(val_loss_id_B / val_batches)
+        val_loss_records['loss_D_A'].append(val_loss_D_A / val_batches)
+        val_loss_records['loss_D_B'].append(val_loss_D_B / val_batches)
+        val_loss_records['loss_G'].append(val_loss_G / val_batches)
+
+        print(f'Epoch {epoch+1}/{n_epochs}, Validation Loss: '
+              f'GAN_A2B: {val_loss_GAN_A2B / val_batches}, '
+              f'GAN_B2A: {val_loss_GAN_B2A / val_batches}, '
+              f'Cycle_A: {val_loss_cycle_A / val_batches}, '
+              f'Cycle_B: {val_loss_cycle_B / val_batches}, '
+              f'ID_A: {val_loss_id_A / val_batches}, '
+              f'ID_B: {val_loss_id_B / val_batches}, '
+              f'D_A: {val_loss_D_A / val_batches}, '
+              f'D_B: {val_loss_D_B / val_batches}',
+              f'G: {val_loss_G / val_batches}')
+        
+        if val_loss_G / val_batches < best_loss_G:
+            best_loss_G = val_loss_G / val_batches
+            best_model_path = 'G_A2B_best_model.pth'
+            torch.save(G_A2B.state_dict(), best_model_path)
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+
+        if early_stop_counter >= patience:
+            print(f"Early stopping triggered, stopping training at epoch {epoch+1}")
+            break
+
+# Plot loss graphs
+epochs_range = range(1, len(train_loss_records['loss_G']) + 1)
+
+plt.figure(figsize=(10, 8))
+plt.subplot(3, 1, 1)
+for key, values in train_loss_records.items():
+    if key != 'loss_G':
+        plt.plot(epochs_range, values, label=f'Train {key}')
+plt.xlabel('Epochs')
+plt.ylabel('Training Loss')
+plt.legend()
+
+plt.subplot(3, 1, 2)
+for key, values in val_loss_records.items():
+    if key != 'loss_G':
+        plt.plot(epochs_range, values, label=f'Val {key}')
+plt.xlabel('Epochs')
+plt.ylabel('Validation Loss')
+plt.legend()
+
+plt.subplot(3, 1, 3)
+plt.plot(epochs_range, train_loss_records['loss_G'], label='Train Loss G')
+plt.plot(epochs_range, val_loss_records['loss_G'], label='Val Loss G')
+plt.xlabel('Epochs')
+plt.ylabel('Generator Loss')
+plt.legend()
+
+plt.show()
