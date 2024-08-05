@@ -9,8 +9,17 @@ This project aims to generate good stellarator configurations from bad ones usin
 - **test_data.csv**: Consists of 100 bad configurations randomly selected from the first 2,000 entries of the original dataset, used as test data.
 - **model.py**: Defines the architecture of the generator and discriminator models.
 - **train.py**: Script for training the generator model.
-- **G_X2Y_epoch_3000.pth**: Pre-trained model parameters for the generator, which can be directly used with test.py to simulate the generation of good configurations.
-- **test.py**: Script for transforming bad configurations in test_data.csv into good configurations. Currently, it can transform approximately 30% of the test data into good configurations.
+- **G_A2B_Base_55ac.pth**: Pre-trained model parameters for the generator, which can be directly used with test.py to simulate the generation of good configurations.
+- **test.py**: Script for testing new trained model.
+- **transform.py**: Script for transforming bad configurations in test_data.csv into good configurations. Currently, it can transform approximately 55% of the test data into good configurations.
+
+## Requirements
+
+To run the scripts, you need to have the following libraries installed:
+
+```sh
+pip install pandas numpy scikit-learn torch matplotlib seaborn
+
 
 ## How to Use This Model
 
@@ -19,7 +28,7 @@ This project aims to generate good stellarator configurations from bad ones usin
    - Ensure your new dataset is named `test_data.csv`.
 
 2. **Run the Test Script**:
-   - Execute `test.py` to start the transformation process. The script will use the pre-trained model parameters to generate good configurations from the bad configurations in `test_data.csv`.
+   - Execute `transform.py` to start the transformation process. The script will use the pre-trained model parameters to generate good configurations from the bad configurations in `test_data.csv`.
 
 ### Example Usage
 
@@ -28,4 +37,4 @@ This project aims to generate good stellarator configurations from bad ones usin
 mv your_dataset.csv test_data.csv
 
 # Run the test script
-python test.py
+python transform.py

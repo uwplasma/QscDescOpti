@@ -3,7 +3,6 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from qsc import Qsc
 from model import Generator
-from sklearn.preprocessing import StandardScaler
 
 # Define the generator models
 input_dim = 20
@@ -16,7 +15,7 @@ device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 G_X2Y.to(device)
 
 # Load the trained model parameters
-G_X2Y.load_state_dict(torch.load('G_A2B_checkpoint_55ac.pth'))
+G_X2Y.load_state_dict(torch.load('G_A2B_Base_55ac.pth'))
 
 G_X2Y.eval()
 
