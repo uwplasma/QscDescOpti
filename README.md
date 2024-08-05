@@ -19,9 +19,9 @@ To run the scripts, you need to have the following libraries installed:
 
 ```sh
 pip install pandas numpy scikit-learn torch matplotlib seaborn
+```
 
-
-## How to Use This Model
+## How to use this model
 
 1. **Prepare the Dataset**:
    - If you want to use this model to transform other bad configurations into good ones, replace the existing `test_data.csv` file with your dataset.
