@@ -54,6 +54,7 @@ Currently, the first solution is under investigation due to its feasibility and 
 ### Solution 1 Workflow in `GradeDesc` Folder
 
 The following illustrates the implemented workflow:
+![Workflow](GradeDesc/Diagram.png)
 
 ```python
 # Pseudocode for training model1 with model2 as a differentiable approximation of the discrepancy
