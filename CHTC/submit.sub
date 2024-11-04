@@ -1,0 +1,21 @@
+universe = vanilla
+log    =    log/myscript-chtc_$(Cluster)_$(Process).log
+error  =  error/myscript-chtc_$(Cluster)_$(Process).err
+output = output/classification_$(Cluster)_$(Process).out
+
+executable = ./executable.sh
+
+arguments = $(filename)
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+transfer_input_files = file:///staging/czhang759/my_env.tar.gz, classification.py, executable.sh, filenames.txt, ./$(filename)
+
+request_cpus = 1
+request_memory = 16GB
+request_disk = 16GB
+
+requirements = (Target.HasCHTCStaging == True)
+
+queue filename from filenames.txt
