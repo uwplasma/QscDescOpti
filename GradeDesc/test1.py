@@ -28,7 +28,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class ResNetRegressor(nn.Module):
-    def __init__(self, output_size=3):
+    def __init__(self, output_size=2):
         super(ResNetRegressor, self).__init__()
         self.output_size = output_size
         self.conv1 = nn.Conv1d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
@@ -60,12 +60,12 @@ class ResNetRegressor(nn.Module):
         x = torch.relu(self.fc4(x))
         x = self.fc5(x)
 
-        if self.output_size == 10:
+        if self.output_size == 8:
             x = torch.sigmoid(x)
         return x
 
-model1 = ResNetRegressor(output_size=10)
-model2 = ResNetRegressor(output_size=3)  
+model1 = ResNetRegressor(output_size=8)
+model2 = ResNetRegressor(output_size=2)  
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model1.load_state_dict(torch.load("best_model1.pth", weights_only=True))
 model1.to(device)
@@ -129,7 +129,7 @@ data['nfp_norm'] = data['nfp'] / 10
 data['p2_norm'] = (data['p2'] + 4e6) / 4e6
 
 
-X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'B2c_norm', 'nfp_norm', 'p2_norm']].values
+X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'nfp_norm']].values
 
 X_tensor = torch.tensor(X, dtype=torch.float32)
 y_tensor = torch.tensor(y, dtype=torch.float32)

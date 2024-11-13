@@ -15,44 +15,49 @@ print(f"Using device: {device}")
 
 # Load data
 data = pd.read_csv("updated_data.csv")
-
-
-# deal with y, normlize y based on min and max value.
-# data['iota_diff'] = np.log1p(data['iota_diff']-data['iota_diff'].min())
-
-# data['beta_diff'] = data['beta_diff']
-
-data['iota_diff'] = np.log1p(data['iota_diff'].abs())
-data['beta_diff'] = data['beta_diff'].abs()
-
-y = data[['iota_diff', 'L_grad_B_min_diff', 'beta_diff']].values
-y_means = y.mean(axis=0)
-y_stds = y.std(axis=0)
+y = data[['iota_computed', 'L_grad_B_min_computed']].values
+y_means = np.array([0.0015223, 0.0357987])
+y_stds = np.array([8.68295316, 0.10227327])
 y = (y - y_means) / y_stds
+
 
 # normalize x based on their range on table provided. 
 data['rc1_norm'] = (data['rc1'] + 1) / 2
-data['rc2_norm'] = (data['rc2'] + 1) / 2
-data['rc3_norm'] = (data['rc3'] + 1) / 2
-
+data['rc2_norm'] = np.where(
+    data['rc1'] == 0,
+    0,
+    (data['rc2']/data['rc1']+1.)/2.
+)
+data['rc3_norm'] = np.where(
+    data['rc2'] == 0,
+    0,
+    (data['rc3']/data['rc2']+1.)/2.
+)
 data['zs1_norm'] = (data['zs1'] + 1) / 2
-data['zs2_norm'] = (data['zs2'] + 1) / 2
-data['zs3_norm'] = (data['zs3'] + 1) / 2
-
+data['zs2_norm'] = np.where(
+    data['zs1'] == 0,
+    0,
+    (data['zs2']/data['zs1']+1.)/2.
+)
+data['zs3_norm'] = np.where(
+    data['zs2'] == 0,
+    0,
+    (data['zs3']/data['zs2']+1.)/2.
+)
 data['etabar_norm'] = (data['etabar'] +3) / 6
 data['B2c_norm'] = (data['B2c'] + 3) / 6
 data['nfp_norm'] = data['nfp'] / 10
 data['p2_norm'] = (data['p2'] + 4e6) / 4e6
 
 
-X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'B2c_norm', 'nfp_norm', 'p2_norm']].values
+X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'nfp_norm']].values
 # print(X.max(0).tolist(),X.min(0).tolist())
 # print(data['etabar'].max(0).tolist(),data['etabar'].min(0).tolist())
 # print(data['B2c'].max(0).tolist(),data['B2c'].min(0).tolist())
 # quit()
 
-X_tensor = torch.tensor(X, dtype=torch.float32)
-y_tensor = torch.tensor(y, dtype=torch.float32)
+X_tensor = torch.tensor(X, dtype=torch.float64)
+y_tensor = torch.tensor(y, dtype=torch.float64)
 
 # Split data
 X_train, X_temp, y_train, y_temp = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
@@ -90,7 +95,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class ResNetRegressor(nn.Module):
-    def __init__(self,output_size=1):
+    def __init__(self,output_size=2):
         super(ResNetRegressor, self).__init__()
         self.output_size = output_size
         
@@ -135,27 +140,27 @@ class ResNetRegressor(nn.Module):
         x = torch.relu(self.fc4(x))
         x = self.fc5(x) 
 
-        if self.output_size == 10:
+        if self.output_size == 8:
             x = torch.sigmoid(x)
         
         return x
 
 # Load pretrained model2
-model2 = ResNetRegressor(output_size=3).to(device)
+model2 = ResNetRegressor(output_size=2).double().to(device)
 model2.load_state_dict(torch.load("best_model2.pth", weights_only=True))
 model2.eval()
 
 # Define model1
-model1 = ResNetRegressor(output_size=10).to(device)
+model1 = ResNetRegressor(output_size=8).double().to(device)
 
 # Define optimizer and improved loss function for model1
-optimizer = optim.Adam(model1.parameters(), lr=1e-4, weight_decay=1e-5)
+optimizer = optim.Adam(model1.parameters(), lr=1e-4)
 
 criterion = nn.MSELoss()
 
 # Training settings
 num_epochs = 50
-patience = 5
+patience = 50
 best_val_loss = np.inf
 epochs_no_improve = 0
 train_epoch_losses, val_epoch_losses = [], []
@@ -169,15 +174,25 @@ for epoch in range(num_epochs):
     with tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch") as tepoch:
         for X_batch, y_batch in tepoch:
             X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
             optimizer.zero_grad()
 
             # Forward pass through model1 and model2
             optimized_output = model1(X_batch)
 
-            diff_optimized = model2(optimized_output)
+            predicted_iota_grad_B = model2(optimized_output)
+
+            predicted_iota = predicted_iota_grad_B[:, 0]
+            predicted_grad_B = predicted_iota_grad_B[:, 1]
+
+            log_iota_diff = torch.log1p(torch.abs(predicted_iota - y_batch[:, 0]))
+            grad_B_diff = torch.abs(predicted_grad_B - y_batch[:, 1])
 
             # target_zeros = torch.zeros_like(diff_optimized, device=device)
-            loss = diff_optimized.norm().mean()
+            loss = (
+            criterion(log_iota_diff, torch.zeros_like(log_iota_diff, device=device)) +
+            criterion(grad_B_diff, torch.zeros_like(grad_B_diff, device=device))
+        )
 
             loss.backward()
             optimizer.step()
@@ -190,18 +205,29 @@ for epoch in range(num_epochs):
     train_epoch_loss = np.mean(batch_train_losses)
     train_epoch_losses.append(train_epoch_loss)
 
+
     # Validation step
     model1.eval()
     batch_val_losses = []
     with torch.no_grad():
         for X_batch, y_batch in val_loader:
             X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
             optimized_output = model1(X_batch)
-            diff_optimized = model2(optimized_output)
-            val_loss = diff_optimized.norm().mean()
+
+            predicted_iota_grad_B = model2(optimized_output)
+
+            predicted_iota = predicted_iota_grad_B[:, 0]
+            predicted_grad_B = predicted_iota_grad_B[:, 1]
+
+            log_iota_diff = torch.log1p(torch.abs(predicted_iota - y_batch[:, 0]))
+            grad_B_diff = torch.abs(predicted_grad_B - y_batch[:, 1])
 
             # target_zeros = torch.zeros_like(diff_optimized, device=device)
-            # val_loss = criterion(diff_optimized,target_zeros)
+            val_loss = (
+            criterion(log_iota_diff, torch.zeros_like(log_iota_diff, device=device)) +
+            criterion(grad_B_diff, torch.zeros_like(grad_B_diff, device=device))
+        )
 
             batch_val_losses.append(val_loss.item())
             val_batch_losses.append(val_loss.item())
@@ -255,26 +281,3 @@ plt.legend()
 plt.title("Epoch-wise Training and Validation Loss")
 plt.savefig("model1_loss_epoch.png")
 plt.show()
-
-
-# Test model1 and calculate the score increase percentage
-model1.load_state_dict(torch.load("best_model1.pth",weights_only=False))
-model1.eval()
-
-
-diff_target_zero_count = 0
-total_count = 0
-with torch.no_grad():
-    for X_batch, _ in test_loader:
-        X_batch = X_batch.to(device)
-        optimized_output = model1(X_batch)
-        diff_optimized = model2(optimized_output)
-
-        # Check if diffs are near zero (e.g., within a small tolerance)
-        tolerance = 0.1  # Define tolerance for diff to be considered zero
-        diff_target_zero_count += (torch.abs(diff_optimized) <= tolerance).all(dim=1).sum().item()
-        total_count += X_batch.size(0)
-
-# Calculate and print the percentage of samples with diffs near zero
-diff_target_zero_percentage = (diff_target_zero_count / total_count) * 100
-print(f"Percentage of samples with diffs near zero: {diff_target_zero_percentage:.2f}%")

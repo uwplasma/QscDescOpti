@@ -14,44 +14,54 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load data
-data = pd.read_csv("updated_data.csv")
+data = pd.read_csv("dataset.csv")
 
 # deal with y, normlize y based on min and max value.
 # data['iota_diff'] = np.log1p(data['iota_diff']-data['iota_diff'].min())
-data['iota_diff'] = np.log1p(data['iota_diff'].abs())
-data['beta_diff'] = data['beta_diff'].abs()
-
-
-y = data[['iota_diff', 'L_grad_B_min_diff', 'beta_diff']].values
-y_means = y.mean(axis=0)
-y_stds = y.std(axis=0)
+y = data[['iota', 'min_L_grad_B']].values
+y_means = np.array([0.0015223, 0.0357987])
+y_stds = np.array([8.68295316, 0.10227327])
 y = (y - y_means) / y_stds
 
 # normalize x based on their range on table provided. 
 data['rc1_norm'] = (data['rc1'] + 1) / 2
-data['rc2_norm'] = (data['rc2'] + 1) / 2
-data['rc3_norm'] = (data['rc3'] + 1) / 2
-
+data['rc2_norm'] = np.where(
+    data['rc1'] == 0,
+    0,
+    (data['rc2']/data['rc1']+1.)/2.
+)
+data['rc3_norm'] = np.where(
+    data['rc2'] == 0,
+    0,
+    (data['rc3']/data['rc2']+1.)/2.
+)
 data['zs1_norm'] = (data['zs1'] + 1) / 2
-data['zs2_norm'] = (data['zs2'] + 1) / 2
-data['zs3_norm'] = (data['zs3'] + 1) / 2
+data['zs2_norm'] = np.where(
+    data['zs1'] == 0,
+    0,
+    (data['zs2']/data['zs1']+1.)/2.
+)
+data['zs3_norm'] = np.where(
+    data['zs2'] == 0,
+    0,
+    (data['zs3']/data['zs2']+1.)/2.
+)
 data['etabar_norm'] = (data['etabar'] +3) / 6
 data['B2c_norm'] = (data['B2c'] + 3) / 6
 data['nfp_norm'] = data['nfp'] / 10
 data['p2_norm'] = (data['p2'] + 4e6) / 4e6
 
-
-X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'B2c_norm', 'nfp_norm', 'p2_norm']].values
+X = data[['rc1_norm', 'rc2_norm', 'rc3_norm', 'zs1_norm', 'zs2_norm', 'zs3_norm', 'etabar_norm', 'nfp_norm']].values
 # Convert data to PyTorch tensors
-X_tensor = torch.tensor(X, dtype=torch.float32)
-y_tensor = torch.tensor(y, dtype=torch.float32)
+X_tensor = torch.tensor(X, dtype=torch.float64)
+y_tensor = torch.tensor(y, dtype=torch.float64)
 
 # Split data
 X_train, X_temp, y_train, y_temp = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
 # DataLoader setup
-batch_size = 64
+batch_size = 1024
 train_dataset = TensorDataset(X_train, y_train)
 val_dataset = TensorDataset(X_val, y_val)
 test_dataset = TensorDataset(X_test, y_test)
@@ -82,7 +92,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class ResNetRegressor(nn.Module):
-    def __init__(self, output_size = 3):
+    def __init__(self, output_size = 2):
         super(ResNetRegressor, self).__init__()
         # Initial Conv layer
         self.conv1 = nn.Conv1d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
@@ -128,7 +138,7 @@ class ResNetRegressor(nn.Module):
         return x
 
 # Initialize model with custom weight initialization
-model = ResNetRegressor().to(device)
+model = ResNetRegressor().double().to(device)
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
@@ -199,10 +209,7 @@ for epoch in range(num_epochs):
         if epochs_no_improve >= patience:
             print("Early stopping triggered")
             break
-    iota_error = criterion(predictions[:,0],y_batch[:,0])
-    L_grad_B_min_error = criterion(predictions[:,1],y_batch[:,1])
-    beta_error = criterion(predictions[:,2],y_batch[:,2])
-    print(iota_error,L_grad_B_min_error,beta_error)
+    
     print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_epoch_loss:.4f}, Val Loss: {val_epoch_loss:.4f}")
 
 
